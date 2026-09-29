@@ -18,9 +18,40 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QJsonObject>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QThread>
 #include <QRegularExpression>
 
 namespace obs_trim {
+
+namespace {
+// Short bounded retry for Windows file replacement: the media backend can
+// release its OS file handle slightly asynchronously after the preview
+// source is destroyed, so the first rename/delete may hit sharing-violation.
+// Total budget ~1s; genuine failures still surface as errors.
+bool renameFileRetry(const QString &from, const QString &to)
+{
+	for (int i = 0; i < 10; ++i) {
+		if (QFile::rename(from, to))
+			return true;
+		QThread::msleep(100);
+	}
+	return QFile::rename(from, to);
+}
+
+bool removeFileRetry(const QString &path)
+{
+	for (int i = 0; i < 10; ++i) {
+		if (QFile::remove(path))
+			return true;
+		if (!QFile::exists(path))
+			return true;
+		QThread::msleep(100);
+	}
+	if (!QFile::exists(path))
+		return true;
+	return QFile::remove(path);
+}
+} // namespace
 
 QString formatMs(qint64 ms)
 {
@@ -48,7 +79,9 @@ QString sanitizeFilename(const QString &name)
 		out.chop(1);
 	if (out.isEmpty())
 		out = QStringLiteral("trimmed");
-	// Reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+	// Reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+	// Windows reserves these even with an extension (CON.txt, NUL.foo),
+	// so check the stem before the first dot, not just the whole string.
 	static QStringList reserved = {QStringLiteral("con"),  QStringLiteral("prn"), QStringLiteral("aux"),
 				       QStringLiteral("nul"),  QStringLiteral("com1"), QStringLiteral("com2"),
 				       QStringLiteral("com3"), QStringLiteral("com4"), QStringLiteral("com5"),
@@ -57,8 +90,17 @@ QString sanitizeFilename(const QString &name)
 				       QStringLiteral("lpt3"), QStringLiteral("lpt4"), QStringLiteral("lpt5"),
 				       QStringLiteral("lpt6"), QStringLiteral("lpt7"), QStringLiteral("lpt8"),
 				       QStringLiteral("lpt9")};
-	if (reserved.contains(out.toLower()))
-		out = out + QStringLiteral("_");
+	QString stem = out.section(QChar('.'), 0, 0);
+	if (reserved.contains(out.toLower()) || reserved.contains(stem.toLower())) {
+		// Mangle the stem itself: "CON.txt" -> "CON_.txt". Appending to the
+		// very end ("CON.txt_") would NOT work because Windows compares the
+		// part before the first dot.
+		int dot = out.indexOf(QChar('.'));
+		if (dot > 0)
+			out = stem + QStringLiteral("_.") + out.mid(dot + 1);
+		else
+			out = out + QStringLiteral("_");
+	}
 	// Limit length to be safe (leave room for extension + tmp suffix)
 	if (out.size() > 180)
 		out = out.left(180).trimmed();
@@ -194,6 +236,9 @@ MediaInfo probeMedia(const QString &ffprobePath, const QString &filePath, QStrin
 	for (const QJsonValue &sv : streams) {
 		QJsonObject st = sv.toObject();
 		QString type = st.value(QStringLiteral("codec_type")).toString();
+		QString codec = st.value(QStringLiteral("codec_name")).toString();
+		info.streamTypes << type;
+		info.streamCodecs << codec;
 		if (type == QStringLiteral("video") && info.width == 0) {
 			info.width = st.value(QStringLiteral("width")).toInt();
 			info.height = st.value(QStringLiteral("height")).toInt();
@@ -294,7 +339,7 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 			res.outputPath = srcInfo.absoluteFilePath();
 			return res;
 		}
-		if (!QFile::rename(srcInfo.absoluteFilePath(), finalPath)) {
+		if (!renameFileRetry(srcInfo.absoluteFilePath(), finalPath)) {
 			res.error = QStringLiteral("Could not rename file.");
 			return res;
 		}
@@ -328,8 +373,10 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 	const qint64 kEofToleranceMs = 200;
 	if ((srcMedia.durationMs - endMs) > kEofToleranceMs)
 		args << QStringLiteral("-to") << secondsArg(endMs);
-	args << QStringLiteral("-map") << QStringLiteral("0") << QStringLiteral("-c") << QStringLiteral("copy")
-	     << QStringLiteral("-avoid_negative_ts") << QStringLiteral("make_zero") << tmpPath;
+	args << QStringLiteral("-map") << QStringLiteral("0") << QStringLiteral("-map_metadata")
+	     << QStringLiteral("0") << QStringLiteral("-map_chapters") << QStringLiteral("0")
+	     << QStringLiteral("-c") << QStringLiteral("copy") << QStringLiteral("-avoid_negative_ts")
+	     << QStringLiteral("make_zero") << tmpPath;
 
 	QProcess ffmpeg;
 	ffmpeg.start(ffmpegPath, args);
@@ -376,6 +423,35 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 		res.error = QStringLiteral("Output video codec changed (expected stream copy). Aborted.");
 		return res;
 	}
+	// Strict stream-copy check: same stream count, same types in order,
+	// same codecs in order (covers every audio track, subtitles, attachments).
+	if (outMedia.totalStreams != srcMedia.totalStreams) {
+		QFile::remove(tmpPath);
+		res.error = QStringLiteral("Stream count changed (%1 -> %2). Aborted to protect recording.")
+				    .arg(srcMedia.totalStreams)
+				    .arg(outMedia.totalStreams);
+		return res;
+	}
+	if (outMedia.streamTypes != srcMedia.streamTypes) {
+		QFile::remove(tmpPath);
+		res.error = QStringLiteral("Stream types changed. Aborted to protect recording.");
+		return res;
+	}
+	bool codecsMatch = (outMedia.streamCodecs.size() == srcMedia.streamCodecs.size());
+	if (codecsMatch) {
+		for (int i = 0; i < outMedia.streamCodecs.size(); ++i) {
+			if (outMedia.streamCodecs[i].compare(srcMedia.streamCodecs[i], Qt::CaseInsensitive) !=
+			    0) {
+				codecsMatch = false;
+				break;
+			}
+		}
+	}
+	if (!codecsMatch) {
+		QFile::remove(tmpPath);
+		res.error = QStringLiteral("Stream codecs changed (expected stream copy). Aborted to protect recording.");
+		return res;
+	}
 	if (outMedia.audioStreamCount != srcMedia.audioStreamCount) {
 		QFile::remove(tmpPath);
 		res.error = QStringLiteral("Audio track count changed (%1 -> %2). Aborted to protect recording.")
@@ -392,14 +468,16 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 		return res;
 	}
 
-	// Rename temp -> final, then remove original
+	// Rename temp -> final, then remove original.
+	// Short bounded retries tolerate the media backend releasing its OS
+	// file handle slightly asynchronously after the preview is closed.
 	if (!destIsSource) {
-		if (!QFile::rename(tmpPath, finalPath)) {
-			QFile::remove(tmpPath);
+		if (!renameFileRetry(tmpPath, finalPath)) {
+			removeFileRetry(tmpPath);
 			res.error = QStringLiteral("Could not move trimmed file into place.");
 			return res;
 		}
-		if (!QFile::remove(srcInfo.absoluteFilePath())) {
+		if (!removeFileRetry(srcInfo.absoluteFilePath())) {
 			// New file is safe; warn but succeed. Try to keep both.
 			res.ok = true;
 			res.outputPath = finalPath;
@@ -410,19 +488,26 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 		// Same name but trimmed range: replace via intermediate
 		QString backup = dir.absoluteFilePath(QStringLiteral(".%1.obs-trim.bak.%2").arg(srcInfo.fileName(), ext));
 		if (QFile::exists(backup))
-			QFile::remove(backup);
-		if (!QFile::rename(srcInfo.absoluteFilePath(), backup)) {
-			QFile::remove(tmpPath);
+			removeFileRetry(backup);
+		if (!renameFileRetry(srcInfo.absoluteFilePath(), backup)) {
+			removeFileRetry(tmpPath);
 			res.error = QStringLiteral("Could not replace original file.");
 			return res;
 		}
-		if (!QFile::rename(tmpPath, finalPath)) {
+		if (!renameFileRetry(tmpPath, finalPath)) {
 			// Restore backup
-			QFile::rename(backup, srcInfo.absoluteFilePath());
+			renameFileRetry(backup, srcInfo.absoluteFilePath());
 			res.error = QStringLiteral("Could not replace original file. Original restored.");
 			return res;
 		}
-		QFile::remove(backup);
+		if (!removeFileRetry(backup)) {
+			res.ok = true;
+			res.outputPath = finalPath;
+			res.error = QStringLiteral("Trimmed file replaced, but the backup (%1) could not be deleted. "
+						   "Please remove it manually.")
+					    .arg(QFileInfo(backup).fileName());
+			return res;
+		}
 	}
 
 	res.ok = true;

@@ -33,6 +33,9 @@ struct MediaInfo {
 	QStringList audioCodecs;
 	int audioStreamCount = 0;
 	int totalStreams = 0;
+	// Per-stream detail in file order, for strict stream-copy verification.
+	QStringList streamTypes; // e.g. {"video", "audio", "audio"}
+	QStringList streamCodecs; // e.g. {"h264", "aac", "aac"}
 };
 
 QString formatMs(qint64 ms);
@@ -60,11 +63,14 @@ struct TrimResult {
 /*
  * Perform safe lossless stream-copy trim.
  * - Creates temp file in same directory as source.
- * - Runs ffmpeg -ss <start> -i <src> -t <dur> -map 0 -c copy
- * - Verifies output with ffprobe.
- * - Renames temp to final dest, deletes source.
+ * - Runs ffmpeg -i <src> -ss <start> [-to <end>] -map 0 -map_metadata 0
+ *   -map_chapters 0 -c copy (output seeking: slower than input seeking
+ *   but considerably more accurate for stream copy).
+ * - Verifies output with ffprobe (stream count/types/codecs, duration).
+ * - Renames temp to final dest, deletes source (with short bounded
+ *   retry to tolerate async OS handle release on Windows).
  * - If start==0 and end covers full duration (rename-only), just renames safely.
- * Never overwrites an existing destination.
+ * Never overwrites an existing destination. Never re-encodes.
  */
 TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, const TrimOptions &opts);
 

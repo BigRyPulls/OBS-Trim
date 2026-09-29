@@ -14,6 +14,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -357,7 +358,15 @@ void TrimDialog::onSave()
 	qint64 in = timeline->inPoint();
 	qint64 out = timeline->outPoint();
 
-	preview->pause();
+	// Root cause of "original could not be deleted": the preview owns an
+	// OBS ffmpeg_source on the source recording, so Windows keeps the file
+	// open. Release the whole preview/source BEFORE any filesystem
+	// replacement, not just pause(). Remember UI state to restore on failure.
+	const qint64 savedPos = currentMs;
+	const qint64 savedIn = in;
+	const qint64 savedOut = out;
+	preview->closeFile();
+
 	saveButton->setEnabled(false);
 	setCursor(Qt::WaitCursor);
 
@@ -377,6 +386,19 @@ void TrimDialog::onSave()
 	saveButton->setEnabled(true);
 
 	if (!r.ok) {
+		// Trimming failed and the original still exists: reopen it so the
+		// user can adjust and retry, restoring playhead/In/Out/filename.
+		if (!sourcePath.isEmpty() && QFile::exists(sourcePath)) {
+			if (preview->openFile(sourcePath)) {
+				currentMs = savedPos;
+				timeline->setInPoint(savedIn);
+				timeline->setOutPoint(savedOut);
+				nameEdit->setText(name);
+				preview->seekTo(savedPos);
+				updateLabels();
+				updateSaveEnabled();
+			}
+		}
 		QMessageBox::warning(this, tr("OBS-Trim"), r.error);
 		return;
 	}

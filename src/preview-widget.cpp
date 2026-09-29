@@ -196,6 +196,11 @@ void MediaPreview::closeFile()
 	if (displayWidget)
 		displayWidget->setSource(nullptr);
 	if (source) {
+		// Detach from the audio monitor and stop decoding BEFORE release.
+		// The monitor mix can otherwise keep the source (and its OS file
+		// handle) alive after release, so Windows refuses delete/rename.
+		obs_source_set_monitoring_type(source, OBS_MONITORING_TYPE_NONE);
+		obs_source_media_stop(source);
 		obs_source_dec_active(source);
 		obs_source_dec_showing(source);
 		obs_source_release(source);
