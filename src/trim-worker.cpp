@@ -82,7 +82,7 @@ QString sanitizeFilename(const QString &name)
 	// Reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
 	// Windows reserves these even with an extension (CON.txt, NUL.foo),
 	// so check the stem before the first dot, not just the whole string.
-	static QStringList reserved = {QStringLiteral("con"),  QStringLiteral("prn"), QStringLiteral("aux"),
+	static QStringList reserved = {QStringLiteral("con"),  QStringLiteral("prn"),  QStringLiteral("aux"),
 				       QStringLiteral("nul"),  QStringLiteral("com1"), QStringLiteral("com2"),
 				       QStringLiteral("com3"), QStringLiteral("com4"), QStringLiteral("com5"),
 				       QStringLiteral("com6"), QStringLiteral("com7"), QStringLiteral("com8"),
@@ -116,9 +116,7 @@ QString findExecutable(const QString &name)
 	// 2. Common install locations (Windows)
 	QStringList candidates;
 #ifdef Q_OS_WIN
-	QString exe = name.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)
-			      ? name
-			      : name + QStringLiteral(".exe");
+	QString exe = name.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive) ? name : name + QStringLiteral(".exe");
 	candidates << QStringLiteral("C:/Program Files/ffmpeg/bin/") + exe
 		   << QStringLiteral("C:/Program Files (x86)/ffmpeg/bin/") + exe
 		   << QStringLiteral("D:/Program Files/ffmpeg/bin/") + exe;
@@ -196,8 +194,12 @@ MediaInfo probeMedia(const QString &ffprobePath, const QString &filePath, QStrin
 		return info;
 	}
 	QProcess proc;
-	QStringList args = {QStringLiteral("-v"), QStringLiteral("quiet"), QStringLiteral("-print_format"),
-			    QStringLiteral("json"), QStringLiteral("-show_format"), QStringLiteral("-show_streams"),
+	QStringList args = {QStringLiteral("-v"),
+			    QStringLiteral("quiet"),
+			    QStringLiteral("-print_format"),
+			    QStringLiteral("json"),
+			    QStringLiteral("-show_format"),
+			    QStringLiteral("-show_streams"),
 			    filePath};
 	proc.start(ffprobePath, args);
 	if (!proc.waitForStarted(5000)) {
@@ -325,10 +327,11 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 	bool isFullRange = (startMs <= kToleranceMs) && ((srcMedia.durationMs - endMs) <= kToleranceMs);
 
 	// Destination conflict: allow if destination IS the source (same file, rename-only no-op handled below)
-	bool destIsSource = (QFileInfo(finalPath).absoluteFilePath().compare(srcInfo.absoluteFilePath(),
-									      Qt::CaseInsensitive) == 0);
+	bool destIsSource =
+		(QFileInfo(finalPath).absoluteFilePath().compare(srcInfo.absoluteFilePath(), Qt::CaseInsensitive) == 0);
 	if (!destIsSource && QFile::exists(finalPath)) {
-		res.error = QStringLiteral("A file named \"%1\" already exists. Choose a different name.").arg(finalName);
+		res.error =
+			QStringLiteral("A file named \"%1\" already exists. Choose a different name.").arg(finalName);
 		return res;
 	}
 
@@ -373,10 +376,9 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 	const qint64 kEofToleranceMs = 200;
 	if ((srcMedia.durationMs - endMs) > kEofToleranceMs)
 		args << QStringLiteral("-to") << secondsArg(endMs);
-	args << QStringLiteral("-map") << QStringLiteral("0") << QStringLiteral("-map_metadata")
-	     << QStringLiteral("0") << QStringLiteral("-map_chapters") << QStringLiteral("0")
-	     << QStringLiteral("-c") << QStringLiteral("copy") << QStringLiteral("-avoid_negative_ts")
-	     << QStringLiteral("make_zero") << tmpPath;
+	args << QStringLiteral("-map") << QStringLiteral("0") << QStringLiteral("-map_metadata") << QStringLiteral("0")
+	     << QStringLiteral("-map_chapters") << QStringLiteral("0") << QStringLiteral("-c") << QStringLiteral("copy")
+	     << QStringLiteral("-avoid_negative_ts") << QStringLiteral("make_zero") << tmpPath;
 
 	QProcess ffmpeg;
 	ffmpeg.start(ffmpegPath, args);
@@ -398,8 +400,8 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 		QString err = QString::fromUtf8(stderrOut).trimmed();
 		if (err.size() > 1200)
 			err = err.right(1200);
-		res.error = QStringLiteral("ffmpeg failed: %1").arg(err.isEmpty() ? QStringLiteral("unknown error")
-										   : err);
+		res.error =
+			QStringLiteral("ffmpeg failed: %1").arg(err.isEmpty() ? QStringLiteral("unknown error") : err);
 		return res;
 	}
 
@@ -440,8 +442,7 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 	bool codecsMatch = (outMedia.streamCodecs.size() == srcMedia.streamCodecs.size());
 	if (codecsMatch) {
 		for (int i = 0; i < outMedia.streamCodecs.size(); ++i) {
-			if (outMedia.streamCodecs[i].compare(srcMedia.streamCodecs[i], Qt::CaseInsensitive) !=
-			    0) {
+			if (outMedia.streamCodecs[i].compare(srcMedia.streamCodecs[i], Qt::CaseInsensitive) != 0) {
 				codecsMatch = false;
 				break;
 			}
@@ -449,7 +450,8 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 	}
 	if (!codecsMatch) {
 		QFile::remove(tmpPath);
-		res.error = QStringLiteral("Stream codecs changed (expected stream copy). Aborted to protect recording.");
+		res.error =
+			QStringLiteral("Stream codecs changed (expected stream copy). Aborted to protect recording.");
 		return res;
 	}
 	if (outMedia.audioStreamCount != srcMedia.audioStreamCount) {
@@ -486,7 +488,8 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 		}
 	} else {
 		// Same name but trimmed range: replace via intermediate
-		QString backup = dir.absoluteFilePath(QStringLiteral(".%1.obs-trim.bak.%2").arg(srcInfo.fileName(), ext));
+		QString backup =
+			dir.absoluteFilePath(QStringLiteral(".%1.obs-trim.bak.%2").arg(srcInfo.fileName(), ext));
 		if (QFile::exists(backup))
 			removeFileRetry(backup);
 		if (!renameFileRetry(srcInfo.absoluteFilePath(), backup)) {

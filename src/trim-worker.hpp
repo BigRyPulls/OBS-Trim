@@ -34,7 +34,7 @@ struct MediaInfo {
 	int audioStreamCount = 0;
 	int totalStreams = 0;
 	// Per-stream detail in file order, for strict stream-copy verification.
-	QStringList streamTypes; // e.g. {"video", "audio", "audio"}
+	QStringList streamTypes;  // e.g. {"video", "audio", "audio"}
 	QStringList streamCodecs; // e.g. {"h264", "aac", "aac"}
 };
 
@@ -50,7 +50,7 @@ MediaInfo probeMedia(const QString &ffprobePath, const QString &filePath, QStrin
 struct TrimOptions {
 	QString sourcePath;
 	qint64 startMs = 0;
-	qint64 endMs = 0; // exclusive; <=0 means EOF
+	qint64 endMs = 0;     // exclusive; <=0 means EOF
 	QString destFileName; // without directory, with extension preserved by caller
 };
 

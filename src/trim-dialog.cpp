@@ -228,8 +228,7 @@ bool TrimDialog::openFile(const QString &path)
 
 	fileLabel->setText(tr("%1  •  %2  •  %3  •  %4 audio track(s)")
 				   .arg(fi.fileName(), formatMs(info.durationMs),
-					info.videoCodec.isEmpty() ? tr("video")
-								  : info.videoCodec,
+					info.videoCodec.isEmpty() ? tr("video") : info.videoCodec,
 					QString::number(info.audioStreamCount)));
 
 	// Filename defaults to recording name without extension
@@ -244,8 +243,7 @@ bool TrimDialog::openFile(const QString &path)
 	scrub->setValue(0);
 
 	if (!preview->openFile(sourcePath)) {
-		QMessageBox::warning(this, tr("OBS-Trim"),
-				     tr("Could not open preview for:\n%1").arg(path));
+		QMessageBox::warning(this, tr("OBS-Trim"), tr("Could not open preview for:\n%1").arg(path));
 		return false;
 	}
 	if (ffmpegPath.isEmpty() || ffprobePath.isEmpty()) {
