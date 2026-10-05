@@ -65,6 +65,8 @@ public:
 	qint64 positionMs() const { return cachedPosition; }
 
 	void seekTo(qint64 ms);
+	void seekRelative(qint64 deltaMs);
+	void restart();
 
 signals:
 	void positionChanged(qint64 ms);

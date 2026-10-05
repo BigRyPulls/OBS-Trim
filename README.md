@@ -21,10 +21,10 @@ Lossless (`-map 0 -c copy`) cuts can only start cleanly around keyframes, so the
 
 ## Use
 
-- Stop a recording -> editor opens automatically (toggle with the checkbox in the dialog).
-- Preview: Play/Pause (Space), seek via timeline/slider, `I` = set start, `O` = set end, `Left/Right` = ±100ms (`Shift` = ±1s), `Home/End` = jump to In/Out.
+- Stop a recording -> editor opens automatically (toggle with the checkbox in the dialog) and starts playing.
+- Preview: Play/Pause (Space), Restart (R), -5s (J) / +5s (L), seek via timeline/slider, `I` = set start, `O` = set end, `Left/Right` = ±100ms (`Shift` = ±1s), `Home/End` = jump to In/Out. Start/End can also be typed directly as `MM:SS.mmm`.
 - Filename defaults to the recording name without extension. Only Windows-forbidden characters are sanitized.
-- Save creates `.original.obs-trim.tmp.<ext>` in the same folder, runs lossless copy, verifies with ffprobe (exists, non-zero, video present, audio track count unchanged, sane duration), then renames to your name and deletes the original. If anything fails the original is left untouched. Existing filenames are never overwritten silently.
+- Save creates `.<name>.obs-trim.tmp.<ext>` in the same folder, runs lossless copy (`-map 0 -map_metadata 0 -map_chapters 0 -c copy`), verifies with ffprobe (exists, non-zero, video codec unchanged, all stream types/codecs unchanged incl. every audio track, sane duration), then renames to your name. With **Replace original ON** (default, remembered) the source is deleted/replaced only after verification; with it **OFF** the original is kept (full-range save copies instead of renaming). If anything fails the original is left untouched. Existing filenames are never overwritten silently.
 - Cancel/close leaves the original exactly where it is.
 
 ## Build (Windows)
@@ -42,6 +42,7 @@ Output: `release/RelWithDebInfo/obs-trim/bin/64bit/obs-trim.dll` + `data/locale/
 ## Notes
 
 - Uses `OBS_FRONTEND_EVENT_RECORDING_STOPPED` + `obs_frontend_get_last_recording()` only (no directory polling). Window is parented to the OBS main window.
-- Preview uses OBS's own `ffmpeg_source` + `obs_display` (no custom decoder).
-- Settings: auto-open (default ON) + window geometry, stored in `BigRyPulls/OBS-Trim` QSettings.
+- Preview uses OBS's own private `ffmpeg_source` + `obs_display` (no custom decoder). The preview source is private and never saved into scene collections.
+- Settings: auto-open (default ON), replace-original (default ON) + window geometry, stored in `BigRyPulls/OBS-Trim` QSettings (`HKCU\Software\BigRyPulls\OBS-Trim` on Windows).
+- The `record-rename` plugin (if installed) must stay disabled for recordings: per-profile `basic.ini` needs `[RecordRename] RenameRecord=false, RenameReplay=false`. OBS-Trim is the only plugin that should rename/replace finished recordings.
 - License: GPL-2.0-or-later (see LICENSE). Architecture inspired by [obs-replay-clip-editor](https://github.com/ProbablyFineSoftware/obs-replay-clip-editor) (GPL-2.0-or-later) but this is a focused fresh implementation with no copied code.

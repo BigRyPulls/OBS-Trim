@@ -47,8 +47,13 @@ private slots:
 	void onOutChanged(qint64 ms);
 	void onSeekRequested(qint64 ms);
 	void onPlayToggled();
+	void onRestart();
+	void onBack5();
+	void onFwd5();
 	void onSetStart();
 	void onSetEnd();
+	void onStartEdited();
+	void onEndEdited();
 	void onSave();
 	void onCancel();
 	void onScrubChanged(int value);
@@ -65,17 +70,21 @@ private:
 
 	QLabel *fileLabel = nullptr;
 	QLabel *currentLabel = nullptr;
-	QLabel *startLabel = nullptr;
-	QLabel *endLabel = nullptr;
 	QLabel *selLabel = nullptr;
 	QLabel *warnLabel = nullptr;
 
+	QPushButton *restartButton = nullptr;
+	QPushButton *back5Button = nullptr;
 	QPushButton *playButton = nullptr;
+	QPushButton *fwd5Button = nullptr;
 	QPushButton *setStartButton = nullptr;
 	QPushButton *setEndButton = nullptr;
 	QPushButton *saveButton = nullptr;
 	QPushButton *cancelButton = nullptr;
+	QLineEdit *startEdit = nullptr;
+	QLineEdit *endEdit = nullptr;
 	QLineEdit *nameEdit = nullptr;
+	QCheckBox *replaceCheck = nullptr;
 	QCheckBox *autoOpenCheck = nullptr;
 
 	QString sourcePath;
@@ -85,4 +94,5 @@ private:
 	qint64 currentMs = 0;
 	bool scrubDragging = false;
 	bool settingsLoaded = false;
+	bool syncingEdits = false;
 };

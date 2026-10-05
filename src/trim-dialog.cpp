@@ -29,6 +29,67 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 using namespace obs_trim;
 
+namespace {
+// Parse "MM:SS.mmm", "HH:MM:SS.mmm", "SS.mmm" or plain seconds.
+// Returns milliseconds, or -1 on invalid input. Never throws.
+qint64 parseTimeMs(const QString &text)
+{
+	QString t = text.trimmed();
+	if (t.isEmpty())
+		return -1;
+	t.replace(',', '.');
+	QStringList parts = t.split(':');
+	if (parts.size() < 1 || parts.size() > 3)
+		return -1;
+	for (QString &p : parts)
+		p = p.trimmed();
+	// Last part carries optional .mmm fraction.
+	QString secPart = parts.back();
+	parts.pop_back();
+	long long millis = 0;
+	QString intSec = secPart;
+	QString frac;
+	int dot = secPart.indexOf('.');
+	if (dot >= 0) {
+		intSec = secPart.left(dot);
+		frac = secPart.mid(dot + 1);
+	}
+	if (intSec.isEmpty())
+		intSec = QStringLiteral("0");
+	bool ok = false;
+	long long secs = intSec.toLongLong(&ok);
+	if (!ok || secs < 0)
+		return -1;
+	if (!frac.isEmpty()) {
+		if (frac.size() > 3)
+			frac = frac.left(3);
+		while (frac.size() < 3)
+			frac += '0';
+		long long ms = frac.toLongLong(&ok);
+		if (!ok || ms < 0)
+			return -1;
+		millis += ms;
+	}
+	if (parts.size() == 0) {
+		millis += secs * 1000;
+	} else if (parts.size() == 1) {
+		long long mins = parts[0].toLongLong(&ok);
+		if (!ok || mins < 0 || secs > 59)
+			return -1;
+		millis += (mins * 60 + secs) * 1000;
+	} else {
+		long long hours = parts[0].toLongLong(&ok);
+		if (!ok || hours < 0)
+			return -1;
+		long long mins = parts[1].toLongLong(&ok);
+		if (!ok || mins < 0 || mins > 59 || secs > 59)
+			return -1;
+		millis += ((hours * 60 + mins) * 60 + secs) * 1000;
+	}
+	return millis;
+}
+} // namespace
+
 TrimDialog::TrimDialog(QWidget *parent) : QDialog(parent)
 {
 	setWindowTitle(QStringLiteral("OBS-Trim"));
@@ -61,24 +122,41 @@ TrimDialog::TrimDialog(QWidget *parent) : QDialog(parent)
 	main->addWidget(timeline);
 
 	auto *labels = new QHBoxLayout();
-	startLabel = new QLabel(this);
-	endLabel = new QLabel(this);
+	auto *startCaption = new QLabel(tr("Start:"), this);
+	startEdit = new QLineEdit(this);
+	startEdit->setPlaceholderText(tr("00:00.000"));
+	startEdit->setMaximumWidth(110);
+	startEdit->setToolTip(tr("Trim start (MM:SS.mmm). Enter to apply."));
+	auto *endCaption = new QLabel(tr("End:"), this);
+	endEdit = new QLineEdit(this);
+	endEdit->setPlaceholderText(tr("00:00.000"));
+	endEdit->setMaximumWidth(110);
+	endEdit->setToolTip(tr("Trim end (MM:SS.mmm). Enter to apply."));
 	selLabel = new QLabel(this);
-	startLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-	endLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
 	selLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-	labels->addWidget(startLabel);
+	labels->addWidget(startCaption);
+	labels->addWidget(startEdit);
+	labels->addSpacing(12);
+	labels->addWidget(endCaption);
+	labels->addWidget(endEdit);
 	labels->addStretch(1);
 	labels->addWidget(selLabel);
-	labels->addStretch(1);
-	labels->addWidget(endLabel);
 	main->addLayout(labels);
 
 	auto *markRow = new QHBoxLayout();
+	restartButton = new QPushButton(tr("Restart"), this);
+	restartButton->setToolTip(tr("Back to beginning (R)"));
+	back5Button = new QPushButton(tr("-5s"), this);
+	back5Button->setToolTip(tr("Back 5 seconds (J)"));
 	playButton = new QPushButton(tr("Play"), this);
+	fwd5Button = new QPushButton(tr("+5s"), this);
+	fwd5Button->setToolTip(tr("Forward 5 seconds (L)"));
 	setStartButton = new QPushButton(tr("Set Start [I]"), this);
 	setEndButton = new QPushButton(tr("Set End [O]"), this);
+	markRow->addWidget(restartButton);
+	markRow->addWidget(back5Button);
 	markRow->addWidget(playButton);
+	markRow->addWidget(fwd5Button);
 	markRow->addWidget(setStartButton);
 	markRow->addWidget(setEndButton);
 	main->addLayout(markRow);
@@ -101,6 +179,11 @@ TrimDialog::TrimDialog(QWidget *parent) : QDialog(parent)
 	autoOpenCheck = new QCheckBox(tr("Automatically open after recording stops"), this);
 	main->addWidget(autoOpenCheck);
 
+	replaceCheck = new QCheckBox(tr("Replace original (delete source after verified save)"), this);
+	replaceCheck->setToolTip(tr("ON: original is removed only after the trimmed file is verified. "
+				    "OFF: original is kept; the result is saved under the new name."));
+	main->addWidget(replaceCheck);
+
 	auto *btnRow = new QHBoxLayout();
 	btnRow->addStretch(1);
 	saveButton = new QPushButton(tr("Save Trimmed Recording"), this);
@@ -117,8 +200,13 @@ TrimDialog::TrimDialog(QWidget *parent) : QDialog(parent)
 	connect(timeline, &TimelineWidget::outPointChanged, this, &TrimDialog::onOutChanged);
 	connect(timeline, &TimelineWidget::seekRequested, this, &TrimDialog::onSeekRequested);
 	connect(playButton, &QPushButton::clicked, this, &TrimDialog::onPlayToggled);
+	connect(restartButton, &QPushButton::clicked, this, &TrimDialog::onRestart);
+	connect(back5Button, &QPushButton::clicked, this, &TrimDialog::onBack5);
+	connect(fwd5Button, &QPushButton::clicked, this, &TrimDialog::onFwd5);
 	connect(setStartButton, &QPushButton::clicked, this, &TrimDialog::onSetStart);
 	connect(setEndButton, &QPushButton::clicked, this, &TrimDialog::onSetEnd);
+	connect(startEdit, &QLineEdit::editingFinished, this, &TrimDialog::onStartEdited);
+	connect(endEdit, &QLineEdit::editingFinished, this, &TrimDialog::onEndEdited);
 	connect(saveButton, &QPushButton::clicked, this, &TrimDialog::onSave);
 	connect(cancelButton, &QPushButton::clicked, this, &TrimDialog::onCancel);
 	connect(scrub, &QSlider::sliderPressed, this, [this]() { scrubDragging = true; });
@@ -129,6 +217,7 @@ TrimDialog::TrimDialog(QWidget *parent) : QDialog(parent)
 	connect(scrub, &QSlider::valueChanged, this, &TrimDialog::onScrubChanged);
 	connect(nameEdit, &QLineEdit::textChanged, this, [this]() { updateSaveEnabled(); });
 	connect(autoOpenCheck, &QCheckBox::toggled, this, [this]() { saveSettings(); });
+	connect(replaceCheck, &QCheckBox::toggled, this, [this]() { saveSettings(); });
 
 	ffmpegPath = findFfmpeg();
 	ffprobePath = findFfprobe();
@@ -152,6 +241,8 @@ void TrimDialog::loadSettings()
 	QSettings s(QStringLiteral("BigRyPulls"), QStringLiteral("OBS-Trim"));
 	bool autoOpen = s.value(QStringLiteral("autoOpen"), true).toBool();
 	autoOpenCheck->setChecked(autoOpen);
+	bool replace = s.value(QStringLiteral("replaceOriginal"), true).toBool();
+	replaceCheck->setChecked(replace);
 	QByteArray geom = s.value(QStringLiteral("geometry")).toByteArray();
 	if (!geom.isEmpty())
 		restoreGeometry(geom);
@@ -164,6 +255,7 @@ void TrimDialog::saveSettings()
 		return;
 	QSettings s(QStringLiteral("BigRyPulls"), QStringLiteral("OBS-Trim"));
 	s.setValue(QStringLiteral("autoOpen"), autoOpenCheck->isChecked());
+	s.setValue(QStringLiteral("replaceOriginal"), replaceCheck->isChecked());
 	s.setValue(QStringLiteral("geometry"), saveGeometry());
 }
 
@@ -246,6 +338,8 @@ bool TrimDialog::openFile(const QString &path)
 		QMessageBox::warning(this, tr("OBS-Trim"), tr("Could not open preview for:\n%1").arg(path));
 		return false;
 	}
+	// Autoplay: the just-finished recording should start playing immediately.
+	preview->play();
 	if (ffmpegPath.isEmpty() || ffprobePath.isEmpty()) {
 		warnLabel->setText(
 			tr("ffmpeg/ffprobe not found in PATH. Preview works, but Save requires FFmpeg. "
@@ -315,6 +409,21 @@ void TrimDialog::onPlayToggled()
 	preview->togglePlayPause();
 }
 
+void TrimDialog::onRestart()
+{
+	preview->restart();
+}
+
+void TrimDialog::onBack5()
+{
+	preview->seekRelative(-5000);
+}
+
+void TrimDialog::onFwd5()
+{
+	preview->seekRelative(5000);
+}
+
 void TrimDialog::onSetStart()
 {
 	timeline->setInPoint(currentMs);
@@ -326,15 +435,54 @@ void TrimDialog::onSetEnd()
 	updateLabels();
 }
 
+void TrimDialog::onStartEdited()
+{
+	if (syncingEdits || !timeline || !startEdit)
+		return;
+	qint64 v = parseTimeMs(startEdit->text());
+	if (v < 0) {
+		// Invalid: revert, do not corrupt state.
+		syncingEdits = true;
+		startEdit->setText(formatMs(timeline->inPoint()));
+		syncingEdits = false;
+		return;
+	}
+	timeline->setInPoint(v);
+	updateLabels();
+}
+
+void TrimDialog::onEndEdited()
+{
+	if (syncingEdits || !timeline || !endEdit)
+		return;
+	qint64 v = parseTimeMs(endEdit->text());
+	if (v < 0) {
+		syncingEdits = true;
+		endEdit->setText(formatMs(timeline->outPoint()));
+		syncingEdits = false;
+		return;
+	}
+	timeline->setOutPoint(v);
+	updateLabels();
+}
+
 void TrimDialog::updateLabels()
 {
 	qint64 in = timeline ? timeline->inPoint() : 0;
 	qint64 out = timeline ? timeline->outPoint() : media.durationMs;
 	if (out <= 0)
 		out = media.durationMs;
-	startLabel->setText(tr("Start: %1").arg(formatMs(in)));
-	endLabel->setText(tr("End: %1").arg(formatMs(out)));
-	selLabel->setText(tr("Selected: %1").arg(formatMs(qMax<qint64>(0, out - in))));
+	if (!syncingEdits) {
+		syncingEdits = true;
+		// Do not clobber the field the user is actively typing in.
+		if (startEdit && !startEdit->hasFocus())
+			startEdit->setText(formatMs(in));
+		if (endEdit && !endEdit->hasFocus())
+			endEdit->setText(formatMs(out));
+		syncingEdits = false;
+	}
+	if (selLabel)
+		selLabel->setText(tr("Selected: %1").arg(formatMs(qMax<qint64>(0, out - in))));
 }
 
 void TrimDialog::updateSaveEnabled()
@@ -373,6 +521,7 @@ void TrimDialog::onSave()
 	opts.startMs = in;
 	opts.endMs = out;
 	opts.destFileName = name;
+	opts.replaceOriginal = replaceCheck ? replaceCheck->isChecked() : true;
 
 	// Re-resolve in case PATH changed
 	ffmpegPath = findFfmpeg();
@@ -422,6 +571,13 @@ void TrimDialog::keyPressEvent(QKeyEvent *event)
 		QDialog::keyPressEvent(event);
 		return;
 	}
+	// While typing in a text field, keys belong to the field (Start/End
+	// time boxes, filename). Otherwise typing "r"/space would restart or
+	// toggle playback instead of entering text.
+	if (qobject_cast<QLineEdit *>(focusWidget())) {
+		QDialog::keyPressEvent(event);
+		return;
+	}
 	switch (event->key()) {
 	case Qt::Key_Space:
 		preview->togglePlayPause();
@@ -434,6 +590,18 @@ void TrimDialog::keyPressEvent(QKeyEvent *event)
 	case Qt::Key_O:
 		timeline->setOutPoint(currentMs);
 		updateLabels();
+		event->accept();
+		return;
+	case Qt::Key_R:
+		preview->restart();
+		event->accept();
+		return;
+	case Qt::Key_J:
+		preview->seekRelative(-5000);
+		event->accept();
+		return;
+	case Qt::Key_L:
+		preview->seekRelative(5000);
 		event->accept();
 		return;
 	case Qt::Key_Left: {

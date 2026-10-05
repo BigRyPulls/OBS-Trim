@@ -171,7 +171,7 @@ bool MediaPreview::openFile(const QString &path)
 	obs_data_set_bool(settings, "restart_on_activate", true);
 	obs_data_set_bool(settings, "close_when_inactive", false);
 
-	source = obs_source_create("ffmpeg_source", "obs-trim-preview", settings, nullptr);
+	source = obs_source_create_private("ffmpeg_source", "obs-trim-preview", settings);
 	obs_data_release(settings);
 	if (!source)
 		return false;
@@ -185,8 +185,9 @@ bool MediaPreview::openFile(const QString &path)
 	cachedPosition = 0;
 	lastPlaying = false;
 	pollTimer.start();
-	// Start paused on first frame; user presses play.
-	obs_source_media_play_pause(source, true);
+	// Autoplay on open: this is a fast post-recording check, the user
+	// expects the just-finished recording to start playing immediately.
+	obs_source_media_play_pause(source, false);
 	return true;
 }
 
@@ -285,7 +286,45 @@ void MediaPreview::seekTo(qint64 ms)
 		ms = 0;
 	if (cachedDuration > 0 && ms > cachedDuration)
 		ms = cachedDuration;
+	obs_media_state before = obs_source_media_get_state(source);
+	bool wasPlaying = (before == OBS_MEDIA_STATE_PLAYING || before == OBS_MEDIA_STATE_BUFFERING ||
+			   before == OBS_MEDIA_STATE_OPENING);
 	obs_source_media_set_time(source, ms);
 	cachedPosition = ms;
 	emit positionChanged(ms);
+	// After ENDED the ffmpeg_source can stay stuck on the last frame;
+	// force a deterministic paused state at the new position so Play
+	// always works afterwards. While playing, resume so scrubbing
+	// while playing does not pause.
+	if (before == OBS_MEDIA_STATE_ENDED) {
+		if (ms >= cachedDuration && cachedDuration > 0) {
+			// Seeking to (or past) EOF: stay at end, paused.
+			obs_source_media_play_pause(source, true);
+		} else {
+			obs_source_media_play_pause(source, true);
+		}
+	} else if (wasPlaying) {
+		obs_source_media_play_pause(source, false);
+	}
+}
+
+void MediaPreview::seekRelative(qint64 deltaMs)
+{
+	qint64 target = cachedPosition + deltaMs;
+	if (target < 0)
+		target = 0;
+	if (cachedDuration > 0 && target > cachedDuration)
+		target = cachedDuration;
+	seekTo(target);
+}
+
+void MediaPreview::restart()
+{
+	if (!source)
+		return;
+	// media_restart is the only reliable way out of ENDED; from any
+	// other state it is equivalent to seek-to-0 + play.
+	obs_source_media_restart(source);
+	cachedPosition = 0;
+	emit positionChanged(0);
 }

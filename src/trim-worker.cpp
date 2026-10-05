@@ -126,6 +126,12 @@ QString findExecutable(const QString &name)
 		candidates << userProfile + QStringLiteral("/scoop/shims/") + exe;
 	}
 	candidates << QStringLiteral("C:/ProgramData/chocolatey/bin/") + exe;
+	// WinGet Links (e.g. `winget install Gyan.FFmpeg`): PATH remains the
+	// primary method, this is only a fallback when PATH lookup failed.
+	QString localAppData = QString::fromLocal8Bit(qgetenv("LOCALAPPDATA"));
+	if (!localAppData.isEmpty()) {
+		candidates << localAppData + QStringLiteral("/Microsoft/WinGet/Links/") + exe;
+	}
 	for (const QString &c : candidates) {
 		if (QFile::exists(c))
 			return QDir::toNativeSeparators(c);
@@ -336,18 +342,35 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 	}
 
 	// Rename-only fast path (no trim): just rename file, no ffmpeg.
+	// With Replace Original OFF a full-range save under a different
+	// name copies safely instead of renaming destructively.
 	if (isFullRange) {
 		if (destIsSource) {
 			res.ok = true;
 			res.outputPath = srcInfo.absoluteFilePath();
 			return res;
 		}
-		if (!renameFileRetry(srcInfo.absoluteFilePath(), finalPath)) {
-			res.error = QStringLiteral("Could not rename file.");
-			return res;
+		if (opts.replaceOriginal) {
+			if (!renameFileRetry(srcInfo.absoluteFilePath(), finalPath)) {
+				res.error = QStringLiteral("Could not rename file.");
+				return res;
+			}
+		} else {
+			if (!QFile::copy(srcInfo.absoluteFilePath(), finalPath)) {
+				res.error = QStringLiteral("Could not copy file.");
+				return res;
+			}
 		}
 		res.ok = true;
 		res.outputPath = finalPath;
+		return res;
+	}
+
+	// Same filename + trimmed range without replacement is impossible:
+	// we cannot overwrite the source in place without replacing it.
+	if (destIsSource && !opts.replaceOriginal) {
+		res.error = QStringLiteral("Replace Original is OFF and the name is unchanged. "
+					   "Choose a different filename or enable Replace Original.");
 		return res;
 	}
 
@@ -470,9 +493,19 @@ TrimResult trimLossless(const QString &ffmpegPath, const QString &ffprobePath, c
 		return res;
 	}
 
-	// Rename temp -> final, then remove original.
+	// Rename temp -> final, then (when replacing) remove original.
 	// Short bounded retries tolerate the media backend releasing its OS
 	// file handle slightly asynchronously after the preview is closed.
+	if (!opts.replaceOriginal) {
+		if (!renameFileRetry(tmpPath, finalPath)) {
+			removeFileRetry(tmpPath);
+			res.error = QStringLiteral("Could not move trimmed file into place.");
+			return res;
+		}
+		res.ok = true;
+		res.outputPath = finalPath;
+		return res;
+	}
 	if (!destIsSource) {
 		if (!renameFileRetry(tmpPath, finalPath)) {
 			removeFileRetry(tmpPath);

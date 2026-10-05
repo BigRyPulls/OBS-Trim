@@ -50,8 +50,9 @@ MediaInfo probeMedia(const QString &ffprobePath, const QString &filePath, QStrin
 struct TrimOptions {
 	QString sourcePath;
 	qint64 startMs = 0;
-	qint64 endMs = 0;     // exclusive; <=0 means EOF
-	QString destFileName; // without directory, with extension preserved by caller
+	qint64 endMs = 0;            // exclusive; <=0 means EOF
+	QString destFileName;        // without directory, with extension preserved by caller
+	bool replaceOriginal = true; // when false: keep source, copy/trim to new file
 };
 
 struct TrimResult {
@@ -68,7 +69,10 @@ struct TrimResult {
  *   but considerably more accurate for stream copy).
  * - Verifies output with ffprobe (stream count/types/codecs, duration).
  * - Renames temp to final dest, deletes source (with short bounded
- *   retry to tolerate async OS handle release on Windows).
+ *   retry to tolerate async OS handle release on Windows). When
+ *   replaceOriginal is false the source is never deleted: full-range
+ *   saves copy the file, trimmed saves write the new file and keep
+ *   the original.
  * - If start==0 and end covers full duration (rename-only), just renames safely.
  * Never overwrites an existing destination. Never re-encodes.
  */
